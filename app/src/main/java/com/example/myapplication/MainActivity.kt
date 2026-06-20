@@ -1,7 +1,8 @@
 package com.example.myapplication
 
-import android.app.AlertDialog
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.hardware.Sensor
 import android.hardware.SensorEvent
@@ -12,11 +13,22 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.VibrationEffect
+import android.os.Vibrator
 import android.os.VibratorManager
 import android.view.Gravity
 import android.view.View
 import android.widget.*
 import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import androidx.core.view.doOnLayout
+import androidx.lifecycle.lifecycleScope
+import com.example.myapplication.data.HighScoresDatabase
+import com.example.myapplication.data.ScoreRecord
+import com.google.android.gms.location.LocationServices
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.random.Random
 
 enum class ObstacleType { FIRE, LIGHTNING, ROCK, TRUCK, COIN }
@@ -34,6 +46,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private lateinit var livesLayout: LinearLayout
     private lateinit var carView: TextView
 
+    private lateinit var gameOverLayout: LinearLayout
+    private lateinit var tvFinalScore: TextView
+    private lateinit var btnPlayAgain: Button
+    private lateinit var btnMainMenu: Button
+
     private var carLane = 2
     private var lives = 3
     private var score = 0
@@ -41,10 +58,17 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var speedKmH = 0
     private val obstacles = mutableListOf<Obstacle>()
     private val obstacleViews = mutableMapOf<Long, TextView>()
+    private var isGameRunning = false
 
     private val handler = Handler(Looper.getMainLooper())
     private val vibrator by lazy {
-        (getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager).defaultVibrator
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            val manager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+            manager?.defaultVibrator ?: getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+        } else {
+            @Suppress("DEPRECATION")
+            getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+        }
     }
 
     private var sensorManager: SensorManager? = null
@@ -52,11 +76,19 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var gameMode = GameMode.BUTTON_SLOW
     private var lastLaneChangeTime = 0L
 
+    private val fusedLocationClient by lazy { LocationServices.getFusedLocationProviderClient(this) }
+
+    private val requestPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { _ -> }
+
     private val gameLoop = object : Runnable {
         override fun run() {
-            tick()
-            val delay = if (gameMode == GameMode.BUTTON_FAST) 30L else 50L
-            handler.postDelayed(this, delay)
+            if (isGameRunning) {
+                tick()
+                val delay = if (gameMode == GameMode.BUTTON_FAST) 30L else 50L
+                handler.postDelayed(this, delay)
+            }
         }
     }
 
@@ -70,36 +102,51 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         tvSpeed     = findViewById(R.id.tvSpeed)
         livesLayout = findViewById(R.id.livesLayout)
 
+        gameOverLayout = findViewById(R.id.gameOverLayout)
+        tvFinalScore = findViewById(R.id.tvFinalScore)
+        btnPlayAgain = findViewById(R.id.btnPlayAgain)
+        btnMainMenu = findViewById(R.id.btnMainMenu)
+
         findViewById<Button>(R.id.btnLeft).setOnClickListener {
-            if (gameMode != GameMode.SENSOR && carLane > 0) { carLane--; updateCarPosition() }
+            if (isGameRunning && gameMode != GameMode.SENSOR && carLane > 0) { carLane--; updateCarPosition() }
         }
         findViewById<Button>(R.id.btnRight).setOnClickListener {
-            if (gameMode != GameMode.SENSOR && carLane < 4) { carLane++; updateCarPosition() }
+            if (isGameRunning && gameMode != GameMode.SENSOR && carLane < 4) { carLane++; updateCarPosition() }
+        }
+
+        btnPlayAgain.setOnClickListener {
+            gameOverLayout.visibility = View.GONE
+            resetGame()
+            startGame()
+        }
+
+        btnMainMenu.setOnClickListener {
+            finish()
         }
 
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         accelerometer = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
 
-        showMenu()
-    }
+        val modeStr = intent.getStringExtra("GAME_MODE")
+        gameMode = try {
+            GameMode.valueOf(modeStr ?: GameMode.BUTTON_SLOW.name)
+        } catch (e: Exception) {
+            GameMode.BUTTON_SLOW
+        }
 
-    private fun showMenu() {
-        val options = arrayOf("2 Button Mode - Slow", "2 Button Mode - Fast", "1 Sensor Mode")
-        AlertDialog.Builder(this)
-            .setTitle("Select Game Mode")
-            .setItems(options) { _, which ->
-                gameMode = when (which) {
-                    0 -> GameMode.BUTTON_SLOW
-                    1 -> GameMode.BUTTON_FAST
-                    else -> GameMode.SENSOR
-                }
-                startGame()
-            }
-            .setCancelable(false)
-            .show()
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+        }
+
+        roadLayout.doOnLayout {
+            setupLaneDividers()
+            setupCar()
+            startGame()
+        }
     }
 
     private fun startGame() {
+        isGameRunning = true
         if (gameMode == GameMode.SENSOR) {
             sensorManager?.registerListener(this, accelerometer, SensorManager.SENSOR_DELAY_GAME)
             findViewById<Button>(R.id.btnLeft).visibility = View.GONE
@@ -109,17 +156,13 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             findViewById<Button>(R.id.btnRight).visibility = View.VISIBLE
         }
         
-        roadLayout.post {
-            setupLaneDividers()
-            setupCar()
-            updateLives()
-            handler.post(gameLoop)
-        }
+        updateLives()
+        handler.post(gameLoop)
     }
 
     override fun onResume() {
         super.onResume()
-        if (gameMode == GameMode.SENSOR) {
+        if (isGameRunning && gameMode == GameMode.SENSOR) {
             sensorManager?.registerListener(this, accelerometer, SensorManager.SENSOR_DELAY_GAME)
         }
     }
@@ -131,71 +174,69 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     override fun onDestroy() {
         super.onDestroy()
+        isGameRunning = false
         handler.removeCallbacksAndMessages(null)
     }
 
     private fun setupLaneDividers() {
-        roadLayout.removeAllViews() // Clear existing dividers if any
-        val roadH = roadLayout.height
+        roadLayout.removeAllViews()
         val roadW = roadLayout.width
-        val dashPx = dp(36)
-        val gapPx  = dp(28)
-        val count  = roadH / (dashPx + gapPx) + 2
+        if (roadW == 0) return
 
-        // 5 lanes means 4 dividers
         for (i in 1..4) {
-            val xCenter = (roadW / 5) * i
-            val column = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            repeat(count) {
-                column.addView(View(this).apply {
-                    setBackgroundColor(Color.argb(68, 255, 255, 255))
-                    layoutParams = LinearLayout.LayoutParams(dp(3), dashPx)
-                })
-                column.addView(Space(this).apply {
-                    layoutParams = LinearLayout.LayoutParams(dp(3), gapPx)
-                })
+            val divider = View(this).apply {
+                setBackgroundColor(Color.parseColor("#44FFFFFF"))
+                val w = dp(2)
+                layoutParams = FrameLayout.LayoutParams(w, FrameLayout.LayoutParams.MATCH_PARENT).apply {
+                    leftMargin = (roadW / 5) * i - (w / 2)
+                }
             }
-            val lp = FrameLayout.LayoutParams(dp(3), FrameLayout.LayoutParams.MATCH_PARENT)
-            lp.leftMargin = xCenter - dp(1)
-            column.layoutParams = lp
-            roadLayout.addView(column)
+            roadLayout.addView(divider)
         }
     }
 
     private fun setupCar() {
-        val size = roadLayout.width / 5
         carView = TextView(this).apply {
             text = "🚗"
-            textSize = 40f
+            textSize = 38f
             gravity = Gravity.CENTER
-            layoutParams = FrameLayout.LayoutParams(size, size)
+            visibility = View.VISIBLE
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+            )
         }
         roadLayout.addView(carView)
+        carLane = 2
         updateCarPosition()
     }
 
     private fun updateCarPosition() {
-        val laneWidth = roadLayout.width / 5
-        carView.x = (laneWidth * carLane).toFloat()
-        carView.y = roadLayout.height * 0.85f
+        val roadW = roadLayout.width
+        val roadH = roadLayout.height
+        if (roadW == 0 || roadH == 0) return
+
+        val laneWidth = roadW / 5
+        // Centering the car emoji within the lane
+        carView.post {
+            carView.x = (laneWidth * carLane).toFloat() + (laneWidth - carView.width) / 2
+            carView.y = roadH * 0.82f
+            carView.bringToFront()
+        }
     }
 
     private fun tick() {
         distance += speedKmH / 100f
         tvDistance.text = "${distance.toInt()}m"
         
-        // Speed logic
         val baseSpeed = if (gameMode == GameMode.BUTTON_FAST) 100 else 60
         speedKmH = if (gameMode == GameMode.SENSOR) {
-            // Speed adjusted by tilt (Y axis) - Bonus requirement
-            // We use tiltY to modulate speed
             baseSpeed + (currentTiltY * 10).toInt().coerceIn(-40, 60)
         } else {
             baseSpeed
         }
         tvSpeed.text = "$speedKmH km/h"
         
-        // Use speed to affect score slightly too
         if (Random.nextInt(10) == 0) score++
         tvScore.text = "$score"
 
@@ -212,19 +253,18 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             }
         }
 
-        // Spawn obstacles and coins
-        if (Random.nextFloat() < 0.08f && obstacles.size < 6) {
-            val type = if (Random.nextFloat() < 0.2f) ObstacleType.COIN else ObstacleType.entries.filter { it != ObstacleType.COIN }.random()
+        if (Random.nextFloat() < 0.08f && obstacles.size < 5) {
+            val type = if (Random.nextFloat() < 0.15f) ObstacleType.COIN else ObstacleType.entries.filter { it != ObstacleType.COIN }.random()
             val obs = Obstacle(System.currentTimeMillis(), Random.nextInt(5), -0.1f, type)
             obstacles.add(obs)
             val tv = makeObstacleView(obs)
             obstacleViews[obs.id] = tv
             roadLayout.addView(tv)
             placeObstacleView(obs)
+            if (::carView.isInitialized) carView.bringToFront()
         }
 
-        // Collision check
-        val hitIndex = obstacles.indexOfFirst { it.lane == carLane && it.yPosition > 0.8f && it.yPosition < 0.95f }
+        val hitIndex = obstacles.indexOfFirst { it.lane == carLane && it.yPosition > 0.78f && it.yPosition < 0.90f }
         if (hitIndex != -1) {
             val hit = obstacles[hitIndex]
             obstacles.removeAt(hitIndex)
@@ -239,28 +279,58 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 playCrashSound()
                 vibrator.vibrate(VibrationEffect.createOneShot(200, VibrationEffect.DEFAULT_AMPLITUDE))
                 if (lives <= 0) {
-                    handler.removeCallbacks(gameLoop)
-                    Toast.makeText(this, "Game Over! Score: $score", Toast.LENGTH_LONG).show()
-                    handler.postDelayed({ showMenu(); resetGame() }, 2000)
+                    onGameOver()
                 }
+            }
+        }
+    }
+
+    private fun onGameOver() {
+        isGameRunning = false
+        handler.removeCallbacks(gameLoop)
+        sensorManager?.unregisterListener(this)
+        
+        tvFinalScore.text = "Final Score: $score"
+        gameOverLayout.visibility = View.VISIBLE
+        saveScore()
+    }
+
+    private fun saveScore() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            fusedLocationClient.lastLocation.addOnSuccessListener { location ->
+                val lat = location?.latitude ?: (32.0853 + (Random.nextDouble() - 0.5) * 0.1)
+                val lon = location?.longitude ?: (34.7818 + (Random.nextDouble() - 0.5) * 0.1)
+                performSave(lat, lon)
+            }
+        } else {
+            performSave(32.0853 + (Random.nextDouble() - 0.5) * 0.1, 34.7818 + (Random.nextDouble() - 0.5) * 0.1)
+        }
+    }
+
+    private fun performSave(lat: Double, lon: Double) {
+        val db = HighScoresDatabase.getDatabase(this)
+        lifecycleScope.launch {
+            val record = ScoreRecord(
+                score = score,
+                date = System.currentTimeMillis(),
+                latitude = lat,
+                longitude = lon
+            )
+            withContext(Dispatchers.IO) {
+                db.scoreDao().insert(record)
             }
         }
     }
 
     private fun playCrashSound() {
         try {
-            // Using reflection to check if the resource exists to avoid build errors if the user hasn't added the file yet
             val resId = resources.getIdentifier("crash_sound", "raw", packageName)
             if (resId != 0) {
                 val mp = MediaPlayer.create(this, resId)
                 mp?.setOnCompletionListener { it.release() }
                 mp?.start()
-            } else {
-                Toast.makeText(this, "CRASH!", Toast.LENGTH_SHORT).show()
             }
-        } catch (_: Exception) {
-            Toast.makeText(this, "CRASH!", Toast.LENGTH_SHORT).show()
-        }
+        } catch (_: Exception) {}
     }
 
     private fun resetGame() {
@@ -268,8 +338,12 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         obstacles.clear()
         obstacleViews.values.forEach { roadLayout.removeView(it) }
         obstacleViews.clear()
+        
+        roadLayout.removeAllViews()
+        setupLaneDividers()
+        setupCar()
+
         updateLives()
-        updateCarPosition()
         tvScore.text = "0"
         tvDistance.text = "0m"
         tvSpeed.text = "0 km/h"
@@ -283,20 +357,28 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             ObstacleType.TRUCK     -> "🚛"
             ObstacleType.COIN      -> "🟡"
         }
-        val size = roadLayout.width / 5
         return TextView(this).apply {
             text = emoji
-            textSize = 34f
+            textSize = 32f
             gravity = Gravity.CENTER
-            layoutParams = FrameLayout.LayoutParams(size, size)
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+            )
         }
     }
 
     private fun placeObstacleView(obs: Obstacle) {
         obstacleViews[obs.id]?.apply {
-            val laneWidth = roadLayout.width / 5
-            x = (laneWidth * obs.lane).toFloat()
-            y = roadLayout.height * obs.yPosition
+            val roadW = roadLayout.width
+            val roadH = roadLayout.height
+            if (roadW > 0 && roadH > 0) {
+                val laneWidth = roadW / 5
+                post {
+                    x = (laneWidth * obs.lane).toFloat() + (laneWidth - width) / 2
+                    y = roadH * obs.yPosition
+                }
+            }
         }
     }
 
@@ -313,16 +395,15 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 
-    // Sensor Implementation
     private var currentTiltY = 0f
     override fun onSensorChanged(event: SensorEvent?) {
-        if (event == null || gameMode != GameMode.SENSOR) return
+        if (event == null || !isGameRunning || gameMode != GameMode.SENSOR) return
         
-        val tiltX = event.values[0] // Lateral tilt
-        currentTiltY = event.values[1] // Forward/Backward tilt (for speed)
+        val tiltX = event.values[0]
+        currentTiltY = event.values[1]
         
         val now = System.currentTimeMillis()
-        if (now - lastLaneChangeTime > 300) { // Debounce lane changes
+        if (now - lastLaneChangeTime > 250) {
             if (tiltX > 3f && carLane > 0) {
                 carLane--
                 updateCarPosition()

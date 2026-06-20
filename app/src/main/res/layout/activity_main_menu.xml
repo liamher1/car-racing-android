@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#0A0A14"
+    android:gravity="center"
+    android:orientation="vertical"
+    android:padding="32dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="CAR DODGER"
+        android:textColor="#00E5FF"
+        android:textSize="40sp"
+        android:textStyle="bold"
+        android:letterSpacing="0.2"
+        android:layout_marginBottom="48dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="SELECT MODE"
+        android:textColor="#FFFFFF"
+        android:textSize="14sp"
+        android:letterSpacing="0.3"
+        android:layout_marginBottom="16dp" />
+
+    <RadioGroup
+        android:id="@+id/rgMode"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="32dp">
+
+        <RadioButton
+            android:id="@+id/rbSlow"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Slow Mode (Buttons)"
+            android:textColor="#FFFFFF"
+            android:buttonTint="#00E5FF"
+            android:checked="true" />
+
+        <RadioButton
+            android:id="@+id/rbFast"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Fast Mode (Buttons)"
+            android:textColor="#FFFFFF"
+            android:buttonTint="#00E5FF" />
+
+        <RadioButton
+            android:id="@+id/rbSensor"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Sensors Mode"
+            android:textColor="#FFFFFF"
+            android:buttonTint="#00E5FF" />
+    </RadioGroup>
+
+    <Button
+        android:id="@+id/btnStart"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="START GAME"
+        android:backgroundTint="#00E5FF"
+        android:textColor="#0A0A14"
+        android:textStyle="bold"
+        android:padding="16dp" />
+
+    <Button
+        android:id="@+id/btnHighScores"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="HIGH SCORES"
+        android:backgroundTint="#FF2D78"
+        android:textColor="#FFFFFF"
+        android:textStyle="bold"
+        android:padding="16dp" />
+
+</LinearLayout>
